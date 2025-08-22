@@ -1,0 +1,4 @@
+kafka-python
+pyarrow
+pyiceberg[glue]
+

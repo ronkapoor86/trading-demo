@@ -1,0 +1,163 @@
+-- CREATE DATABASE default_catalog.realtime_data;
+
+-- USE default_catalog.realtime_data;
+
+-- CREATE EXTERNAL CATALOG iceberg_catalog_glue
+--  PROPERTIES
+--  (
+--  "type" = "iceberg",
+--  "iceberg.catalog.type" = "glue",
+--  "aws.glue.use_instance_profile" = "true",
+--  "aws.glue.region" = "<insert-region-here>", 
+--  "aws.s3.use_instance_profile" = "true",
+--  "aws.s3.region" = "<insert-region-here>" 
+--  );
+
+-- CREATE TABLE iceberg_catalog_glue.<insert-database-name>.refdata (
+--     symbol STRING,
+--     isin STRING,
+--     cusip STRING,
+--     description STRING,
+--     security_type STRING,
+--     exchange STRING,
+--     currency STRING
+-- );
+
+-- CREATE TABLE iceberg_catalog_glue.<insert-database-name>.books (
+--     book_id STRING,
+--     book_name STRING,
+--     desk STRING,
+--     currency STRING
+-- );
+
+-- CREATE TABLE iceberg_catalog_glue.<insert-database-name>.traders (
+--     trader_id STRING,
+--     name STRING,
+--     team STRING
+-- );
+
+-- CREATE TABLE iceberg_catalog_glue.<insert-database-name>.booktraders (
+--     book_id STRING,
+--     trader_id STRING,
+--     role STRING
+-- );
+
+-- CREATE TABLE default_catalog.realtime_data.prices (
+--     symbol STRING,
+--     price_timestamp DATETIME,
+--     price DECIMAL(18,8)
+-- ) 
+-- PRIMARY KEY(symbol)
+-- DISTRIBUTED BY HASH(symbol);
+
+-- CREATE TABLE default_catalog.realtime_data.trades (
+--     trade_id STRING,
+--     order_id STRING,
+--     book_id STRING,
+--     symbol STRING,
+--     trade_timestamp DATETIME,
+--     side STRING,
+--     price DECIMAL(18,8),
+--     quantity DECIMAL(18,6),
+--     fill_number INT,
+--     total_fills INT,
+--     fills_remaining INT
+-- );
+
+--  CREATE MATERIALIZED VIEW default_catalog.realtime_data.positions_base_mv
+-- DISTRIBUTED BY HASH(book_id)
+-- REFRESH ASYNC
+-- AS
+-- SELECT
+--     t.book_id,
+--     t.symbol,
+--     SUM(
+--         CASE 
+--             WHEN t.side = 'BUY' THEN t.quantity
+--             WHEN t.side = 'SELL' THEN -t.quantity
+--         END
+--     ) AS quantity,
+--     SUM(CASE WHEN t.side = 'BUY' THEN t.quantity * t.price END)
+--     / SUM(CASE WHEN t.side = 'BUY' THEN t.quantity END) AS avg_price
+-- FROM default_catalog.realtime_data.trades t
+-- GROUP BY t.book_id, t.symbol
+-- -- Only keep positions where net quantity is positive (long positions)
+-- HAVING SUM(
+--     CASE 
+--         WHEN t.side = 'BUY' THEN t.quantity
+--         WHEN t.side = 'SELL' THEN -t.quantity
+--     END
+-- ) > 0;
+
+-- CREATE MATERIALIZED VIEW  default_catalog.realtime_data.positions_with_price_mv
+-- DISTRIBUTED BY HASH(symbol)
+-- REFRESH ASYNC
+-- AS
+-- SELECT
+--     p.book_id,
+--     p.symbol,
+--     p.quantity,
+--     p.avg_price,
+--     pr.price AS current_price
+-- FROM positions_base_mv p
+-- LEFT JOIN prices pr
+--        ON p.symbol = pr.symbol;
+
+-- CREATE VIEW default_catalog.realtime_data.positions_pnl_view AS
+-- SELECT
+--     p.book_id,
+--     b.book_name,
+--     bt.trader_id,
+--     t.name AS trader_name,
+--     p.symbol,
+--     r.description AS security_description,
+--     p.quantity,
+--     p.avg_price,
+--     p.current_price,
+--     (p.current_price - p.avg_price) * p.quantity AS unrealized_pnl
+-- FROM default_catalog.realtime_data.positions_with_price_mv p
+-- LEFT JOIN iceberg_catalog_glue.marketdemostarrocks.refdata      r  ON p.symbol   = r.symbol
+-- LEFT JOIN iceberg_catalog_glue.marketdemostarrocks.books        b  ON p.book_id  = b.book_id
+-- LEFT JOIN iceberg_catalog_glue.marketdemostarrocks.booktraders  bt ON p.book_id  = bt.book_id
+-- LEFT JOIN iceberg_catalog_glue.marketdemostarrocks.traders      t  ON bt.trader_id = t.trader_id;
+
+-- CREATE ROUTINE LOAD trades_routine_load ON trades
+-- COLUMNS(trade_id, order_id, book_id, symbol, trade_timestamp, side, price, quantity, fill_number, total_fills, fills_remaining)
+-- PROPERTIES
+-- (
+-- "desired_concurrent_number"="1",
+-- "format" ="json"
+-- )
+-- FROM KAFKA
+-- (
+-- "kafka_broker_list" ="<insert-kafka-ip>:9092",
+-- "kafka_topic" = "trades_topic",
+-- "property.kafka_default_offsets" = "OFFSET_BEGINNING"
+-- );
+
+-- CREATE ROUTINE LOAD prices_routine_load ON prices
+-- COLUMNS(symbol, price_timestamp, price)
+-- PROPERTIES
+-- (
+-- "desired_concurrent_number"="1",
+-- "format" ="json"
+-- )
+-- FROM KAFKA
+-- (
+-- "kafka_broker_list" ="<insert-kafka-ip>:9092",
+-- "kafka_topic" = "prices_topic",
+-- "property.kafka_default_offsets" = "OFFSET_BEGINNING"
+-- );
+
+-- select * from default_catalog.realtime_data.prices;
+-- select * from default_catalog.realtime_data.trades;
+-- select * from default_catalog.realtime_data.positions_base_mv;
+-- select * from default_catalog.realtime_data.positions_with_price_mv;
+-- select * from default_catalog.realtime_data.positions_pnl_view;
+-- select * from  iceberg_catalog_glue.marketdemostarrocks.refdata;
+-- select * from  iceberg_catalog_glue.marketdemostarrocks.books;
+-- select * from  iceberg_catalog_glue.marketdemostarrocks.booktraders;
+-- select * from  iceberg_catalog_glue.marketdemostarrocks.traders;
+
+
+
