@@ -25,7 +25,7 @@
     {
       "datasource": {
         "type": "mysql",
-        "uid": "fevlr5w1woao0c"
+        "uid": "bevys2uuz57ggd"
       },
       "fieldConfig": {
         "defaults": {
@@ -106,7 +106,7 @@
     {
       "datasource": {
         "type": "mysql",
-        "uid": "fevlr5w1woao0c"
+        "uid": "bevys2uuz57ggd"
       },
       "fieldConfig": {
         "defaults": {
@@ -192,7 +192,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select * from realtime_data.prices ORDER BY symbol ASC;",
+          "rawSql": "SELECT symbol,MAX_BY(price, price_timestamp) AS price, MAX(price_timestamp) AS ts FROM realtime_data.prices GROUP BY symbol ORDER BY symbol ASC;\n",
           "refId": "A",
           "sql": {
             "columns": [
@@ -219,7 +219,7 @@
     {
       "datasource": {
         "type": "mysql",
-        "uid": "fevlr5w1woao0c"
+        "uid": "bevys2uuz57ggd"
       },
       "fieldConfig": {
         "defaults": {
@@ -312,7 +312,7 @@
     {
       "datasource": {
         "type": "mysql",
-        "uid": "fevlr5w1woao0c"
+        "uid": "bevys2uuz57ggd"
       },
       "fieldConfig": {
         "defaults": {
@@ -396,7 +396,6 @@
     }
   ],
   "preload": false,
-  "refresh": "5s",
   "schemaVersion": 41,
   "tags": [],
   "templating": {
@@ -410,5 +409,5 @@
   "timezone": "browser",
   "title": "Trading Dashboard",
   "uid": "7124a424-111e-4aa3-b6f2-e4288d550b74",
-  "version": 11
+  "version": 15
 }
