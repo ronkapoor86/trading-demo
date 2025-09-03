@@ -21,7 +21,7 @@ This is a demo showcasing StarRocks features within the context of equities mark
 
 The general architecture is as follows. We have an external Iceberg catalog via Glue, and we have a stream of data incoming from Kafka. This data is ingested via routine load into StarRocks and then displayed on Grafana.
 
-![architecture](./architectureview.png)
+![architecture](./architecturereview.png)
 
 
 ## Setup
