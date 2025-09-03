@@ -8,7 +8,7 @@
 --  "type" = "iceberg",
 --  "iceberg.catalog.type" = "glue",
 --  "aws.glue.use_instance_profile" = "true",
---  "aws.glue.region" = "<insert-region-here>", 
+--  "aws.glue.region" = <insert-region-here>, 
 --  "aws.s3.use_instance_profile" = "true",
 --  "aws.s3.region" = "<insert-region-here>" 
 --  );
@@ -42,13 +42,18 @@
 --     role STRING
 -- );
 
--- CREATE TABLE default_catalog.realtime_data.prices (
+-- CREATE TABLE prices (
 --     symbol STRING,
 --     price_timestamp DATETIME,
 --     price DECIMAL(18,8)
--- ) 
--- PRIMARY KEY(symbol)
--- DISTRIBUTED BY HASH(symbol);
+-- )
+-- DUPLICATE KEY (symbol, price_timestamp)
+-- PARTITION BY date_trunc('DAY', price_timestamp)
+-- DISTRIBUTED BY HASH(symbol) 
+-- BUCKETS 8
+-- PROPERTIES (
+--     "colocate_with" = "symbol_group"
+-- );
 
 -- CREATE TABLE default_catalog.realtime_data.trades (
 --     trade_id STRING,
@@ -64,46 +69,78 @@
 --     fills_remaining INT
 -- );
 
---  CREATE MATERIALIZED VIEW default_catalog.realtime_data.positions_base_mv
--- DISTRIBUTED BY HASH(book_id)
--- REFRESH ASYNC
+-- CREATE MATERIALIZED VIEW default_catalog.realtime_data.positions_base_mv
+-- DISTRIBUTED BY HASH(symbol) BUCKETS 8
+-- REFRESH ASYNC START("2025-09-02 12:30:00") EVERY (INTERVAL 1 MINUTE)
 -- AS
 -- SELECT
 --     t.book_id,
 --     t.symbol,
+
+--     -- Net position (buys add, sells subtract)
 --     SUM(
---         CASE 
---             WHEN t.side = 'BUY' THEN t.quantity
+--         CASE
+--             WHEN t.side = 'BUY'  THEN t.quantity
 --             WHEN t.side = 'SELL' THEN -t.quantity
 --         END
---     ) AS quantity,
---     SUM(CASE WHEN t.side = 'BUY' THEN t.quantity * t.price END)
---     / SUM(CASE WHEN t.side = 'BUY' THEN t.quantity END) AS avg_price
--- FROM default_catalog.realtime_data.trades t
--- GROUP BY t.book_id, t.symbol
--- -- Only keep positions where net quantity is positive (long positions)
--- HAVING SUM(
---     CASE 
---         WHEN t.side = 'BUY' THEN t.quantity
---         WHEN t.side = 'SELL' THEN -t.quantity
---     END
--- ) > 0;
+--     ) AS net_quantity,
 
--- CREATE MATERIALIZED VIEW  default_catalog.realtime_data.positions_with_price_mv
--- DISTRIBUTED BY HASH(symbol)
--- REFRESH ASYNC
+--     -- Weighted average price (on buys only)
+--     SUM(
+--         CASE
+--             WHEN t.side = 'BUY' THEN t.quantity * t.price
+--         END
+--     ) / NULLIF(
+--         SUM(
+--             CASE
+--                 WHEN t.side = 'BUY' THEN t.quantity
+--             END
+--         ),
+--         0
+--     ) AS avg_price
+
+-- FROM default_catalog.realtime_data.trades t
+-- GROUP BY
+--     t.book_id,
+--     t.symbol
+-- HAVING
+--     SUM(
+--         CASE
+--             WHEN t.side = 'BUY'  THEN t.quantity
+--             WHEN t.side = 'SELL' THEN -t.quantity
+--         END
+--     ) > 0;
+
+-- CREATE MATERIALIZED VIEW default_catalog.realtime_data.positions_with_price_mv
+-- DISTRIBUTED BY HASH(symbol) BUCKETS 8
+-- REFRESH ASYNC START("2025-09-02 12:30:00") EVERY (INTERVAL 1 MINUTE)
+-- PROPERTIES (
+--     "colocate_with" = "symbol_group"
+-- )
 -- AS
 -- SELECT
 --     p.book_id,
 --     p.symbol,
---     p.quantity,
+--     p.net_quantity,
 --     p.avg_price,
 --     pr.price AS current_price
 -- FROM positions_base_mv p
+-- LEFT JOIN (
+--     SELECT
+--         symbol,
+--         MAX(price_timestamp) AS max_ts
+--     FROM prices
+--     GROUP BY symbol
+-- ) latest
+--     ON p.symbol = latest.symbol
 -- LEFT JOIN prices pr
---        ON p.symbol = pr.symbol;
+--     ON pr.symbol = latest.symbol
+--    AND pr.price_timestamp = latest.max_ts;
 
--- CREATE VIEW default_catalog.realtime_data.positions_pnl_view AS
+-- CREATE MATERIALIZED VIEW default_catalog.realtime_data.positions_pnl_view
+-- DISTRIBUTED BY HASH(symbol) BUCKETS 8
+-- REFRESH ASYNC START("2025-09-02 12:30:00") EVERY (INTERVAL 1 MINUTE)
+-- AS
 -- SELECT
 --     p.book_id,
 --     b.book_name,
@@ -111,15 +148,19 @@
 --     t.name AS trader_name,
 --     p.symbol,
 --     r.description AS security_description,
---     p.quantity,
+--     p.net_quantity,
 --     p.avg_price,
 --     p.current_price,
---     (p.current_price - p.avg_price) * p.quantity AS unrealized_pnl
+--     (p.current_price - p.avg_price) * p.net_quantity AS unrealized_pnl
 -- FROM default_catalog.realtime_data.positions_with_price_mv p
--- LEFT JOIN iceberg_catalog_glue.marketdemostarrocks.refdata      r  ON p.symbol   = r.symbol
--- LEFT JOIN iceberg_catalog_glue.marketdemostarrocks.books        b  ON p.book_id  = b.book_id
--- LEFT JOIN iceberg_catalog_glue.marketdemostarrocks.booktraders  bt ON p.book_id  = bt.book_id
--- LEFT JOIN iceberg_catalog_glue.marketdemostarrocks.traders      t  ON bt.trader_id = t.trader_id;
+-- LEFT JOIN iceberg_catalog_glue.<insert-database-name>.refdata r
+--     ON p.symbol = r.symbol
+-- LEFT JOIN iceberg_catalog_glue.<insert-database-name>.books b
+--     ON p.book_id = b.book_id
+-- LEFT JOIN iceberg_catalog_glue.<insert-database-name>.booktraders bt
+--     ON p.book_id = bt.book_id
+-- LEFT JOIN iceberg_catalog_glue.<insert-database-name>.traders t
+--     ON bt.trader_id = t.trader_id;
 
 -- CREATE ROUTINE LOAD trades_routine_load ON trades
 -- COLUMNS(trade_id, order_id, book_id, symbol, trade_timestamp, side, price, quantity, fill_number, total_fills, fills_remaining)
@@ -130,7 +171,7 @@
 -- )
 -- FROM KAFKA
 -- (
--- "kafka_broker_list" ="<insert-kafka-ip>:9092",
+-- "kafka_broker_list" ="your-host:9092",
 -- "kafka_topic" = "trades_topic",
 -- "property.kafka_default_offsets" = "OFFSET_BEGINNING"
 -- );
@@ -144,20 +185,7 @@
 -- )
 -- FROM KAFKA
 -- (
--- "kafka_broker_list" ="<insert-kafka-ip>:9092",
+-- "kafka_broker_list" ="your-host:9092",
 -- "kafka_topic" = "prices_topic",
 -- "property.kafka_default_offsets" = "OFFSET_BEGINNING"
 -- );
-
--- select * from default_catalog.realtime_data.prices;
--- select * from default_catalog.realtime_data.trades;
--- select * from default_catalog.realtime_data.positions_base_mv;
--- select * from default_catalog.realtime_data.positions_with_price_mv;
--- select * from default_catalog.realtime_data.positions_pnl_view;
--- select * from  iceberg_catalog_glue.marketdemostarrocks.refdata;
--- select * from  iceberg_catalog_glue.marketdemostarrocks.books;
--- select * from  iceberg_catalog_glue.marketdemostarrocks.booktraders;
--- select * from  iceberg_catalog_glue.marketdemostarrocks.traders;
-
-
-
